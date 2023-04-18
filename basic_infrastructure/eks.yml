@@ -1,0 +1,317 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'CloudFormation Template To Create EKS Cluster and Managed Node Group'
+
+#=============================================================================#
+# Below Resourses will be created as part of this stack.
+#1. EKS Control Plane Cluster
+#2. EKS Control Plane Security Group
+#3. EKS Control Plane Security Group Ingress Rule
+#4. EKS WorkerNode Security Group Ingress Rule
+#5. EKS WorkerNode Security Group
+#6. EKS Addons
+#7. EKS Managed Node Group
+#Pre-Request : SSH key pair should be created beforehand and provide the name here.
+#=============================================================================#
+  
+Parameters:
+
+#=============================================================================#
+# Parameters 
+#=============================================================================#
+
+  RootStackName:
+    Type: String
+
+  EKSVPC:
+    Description: VPC of the cluster.
+    Type: String
+
+  EKSIpFamily:
+    Description: Specify which IP family is used to assign Kubernetes pod and service IP addresses
+    Type: String
+    Default: ipv4
+
+  EKSServiceIpv4Cidr:
+    Description:  The CIDR block to assign Kubernetes service IP addresses from
+    Type: String
+    Default: 192.168.0.0/24
+
+  EKSEndpointPrivateAccess:
+    Description:  Set this value to true to enable private access for your cluster's Kubernetes API server endpoint
+    Type: String
+    Default: true
+
+  EKSEndpointPublicAccess:
+    Description:  Set this value to false to disable public access to your cluster's Kubernetes API server endpoint
+    Type: String
+    Default: false
+
+  EKSVersion:
+    Description: The desired Kubernetes version for your cluster.
+    Type: String
+    Default: 1.26
+
+  EKSAddonCoreDNSVersion:
+    Description: The version of the add-on.
+    Type: String
+    Default: v1.9.3-eksbuild.2
+
+  EKSAddonVPCCNIVersion:
+    Description: The version of the add-on.
+    Type: String
+    Default: v1.12.6-eksbuild.1
+
+  EKSAddonKubeProxyVersion:
+    Description: The version of the add-on.
+    Type: String
+    Default: v1.25.6-eksbuild.2
+
+  EKSClusterRoleArn:
+    Description: The Amazon Resource Name (ARN) of the IAM role to associate with your cluster.
+    Type: String
+    Default: arn:aws:iam::106754953546:role/eksClusterRole
+
+  EKSAmiType:
+    Description: The AMI type for your node group
+    Type: String
+    Default: BOTTLEROCKET_x86_64
+
+  EKSCapacityType:
+    Description: The capacity type of your managed node group.
+    Type: String
+    Default: ON_DEMAND
+
+  EKSDiskSize:
+    Description: The root device disk size (in GiB) for your node group instances.
+    Type: String
+    Default: 20
+
+  EKSForceUpdateEnabled:
+    Description: Force the update if the existing node group's pods are unable to be drained due to a pod disruption budget issue
+    Type: String
+    Default: false
+
+  EKSInstanceTypes:
+    Description: Specify the instance types for a node group.
+    Type: String
+    Default: t3.micro
+
+  EKSNodeRole:
+    Description: The Amazon Resource Name (ARN) of the IAM role to associate with your node group
+    Type: String
+    Default: arn:aws:iam::106754953546:role/eksNodeRole
+
+  EKSEc2SshKey:
+    Description: The Amazon EC2 SSH key name that provides access for SSH communication with the nodes in the managed node group
+    Type: String
+    Default: bastionhost
+
+  EKSDesiredSize:
+    Description: The current number of nodes that the managed node group should maintain.
+    Type: String
+    Default: 1
+
+  EKSMaxSize:
+    Description: The maximum number of nodes that the managed node group can scale out to
+    Type: String
+    Default: 2
+
+  EKSMinSize:
+    Description: The minimum number of nodes that the managed node group can scale in to.
+    Type: String
+    Default: 1
+
+  EKSMaxUnavailable:
+    Description: The maximum number of nodes unavailable at once during a version update
+    Type: String
+    Default: 1
+
+  EKSPrivateSubnet1:
+    Description: Specify subnets for your Amazon EKS nodes
+    Type: String  
+
+  EKSPrivateSubnet2:
+    Description: Specify subnets for your Amazon EKS nodes
+    Type: String
+
+  BastionHostSecurityGroup:
+    Description: Security group of the bastion host.
+    Type: String
+
+
+
+  
+Resources:
+
+#=============================================================================#
+# EKS Comtrol Plane
+#=============================================================================#
+
+  EKSControlPlane:
+    Type: AWS::EKS::Cluster
+    Properties:
+      KubernetesNetworkConfig:
+        IpFamily: !Ref EKSIpFamily
+        ServiceIpv4Cidr: !Ref EKSServiceIpv4Cidr
+      # Logging: ClusterLogging
+      Name: !Sub ${RootStackName}-eks
+      ResourcesVpcConfig:
+        EndpointPrivateAccess: !Ref EKSEndpointPrivateAccess
+        EndpointPublicAccess: !Ref EKSEndpointPublicAccess
+        SecurityGroupIds:
+          - !Ref EksControlPlaneSecurityGroup
+        SubnetIds:
+          - !Ref EKSPrivateSubnet1
+          - !Ref EKSPrivateSubnet2
+      RoleArn: !Ref EKSClusterRoleArn # Required
+      Tags: 
+        -
+          Key: Name
+          Value: !Sub ${RootStackName}-eks
+      Version: !Ref EKSVersion
+  
+#=============================================================================#
+# EKS Comtrol Plane Security Group
+#=============================================================================#
+
+  EksControlPlaneSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for the elastic network interfaces between the control plane and the worker nodes
+      VpcId: !Ref EKSVPC
+      GroupName: !Sub "${RootStackName}-eks-ControlPlane-sg"
+      Tags: 
+        -
+          Key: Name
+          Value: !Sub "${RootStackName}-eks-ControlPlane-sg"
+
+#=============================================================================#
+# EKS Comtrol Plane Security Group Ingress Rule
+#=============================================================================#
+
+  DBClusterSecurityGroupIngress:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !GetAtt 'EksControlPlaneSecurityGroup.GroupId'
+      IpProtocol: -1
+      SourceSecurityGroupId: !GetAtt 'EksControlPlaneSecurityGroup.GroupId'
+      Description: 'Self Reference' 
+
+  ControlPlaneIngressFromWorkerNodesHttps:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allow incoming HTTPS traffic (TCP/443) from worker nodes (for API server)
+      GroupId: !GetAtt 'EksControlPlaneSecurityGroup.GroupId'
+      SourceSecurityGroupId: !GetAtt 'WorkerNodesSecurityGroup.GroupId'
+      IpProtocol: tcp
+      ToPort: 443
+      FromPort: 443
+
+#=============================================================================#
+# EKS WorkerNode Security Group
+#=============================================================================#
+
+  WorkerNodesSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for all the worker nodes
+      VpcId: !Ref EKSVPC
+      GroupName: !Sub "${RootStackName}-eks-workernodes-sg"
+      Tags:
+        - Key: Name
+          Value: !Sub "${RootStackName}-eks-WorkerNodes-sg"
+
+#=============================================================================#
+# EKS WorkerNode Security Group Ingress Rule
+#=============================================================================#
+
+  WorkerNodesIngressFromWorkerNodes:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !GetAtt 'WorkerNodesSecurityGroup.GroupId'
+      IpProtocol: -1
+      SourceSecurityGroupId: !GetAtt 'WorkerNodesSecurityGroup.GroupId'
+      Description: 'Self Reference' 
+
+  WorkerNodesIngressFromControlPlaneKubelet:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allow incoming kubelet traffic (TCP/10250) from control plane 
+      GroupId: !GetAtt 'WorkerNodesSecurityGroup.GroupId'
+      SourceSecurityGroupId: !GetAtt 'EksControlPlaneSecurityGroup.GroupId'
+      IpProtocol: tcp
+      FromPort: 10250
+      ToPort: 10250
+
+  WorkerNodesIngressFromControlPlaneHttps:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allow incoming HTTPS traffic (TCP/443) from control plane (for pods running extension API servers)
+      GroupId: !GetAtt 'WorkerNodesSecurityGroup.GroupId'
+      SourceSecurityGroupId: !GetAtt 'EksControlPlaneSecurityGroup.GroupId'
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+
+#=============================================================================#
+# EKS Addons
+#=============================================================================#
+
+  EKSAddonCoreDNS:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: coredns 
+      AddonVersion: !Ref EKSAddonCoreDNSVersion
+      ClusterName: !Ref EKSControlPlane
+      PreserveOnDelete: false
+      ResolveConflicts: OVERWRITE
+
+  EKSAddonVPCCNI:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: vpc-cni 
+      AddonVersion: !Ref EKSAddonVPCCNIVersion
+      ClusterName: !Ref EKSControlPlane
+      PreserveOnDelete: false
+      ResolveConflicts: OVERWRITE
+
+  EKSAddonKubeProxy:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: kube-proxy 
+      AddonVersion: !Ref EKSAddonKubeProxyVersion
+      ClusterName: !Ref EKSControlPlane
+      PreserveOnDelete: false
+      ResolveConflicts: OVERWRITE
+
+
+#=============================================================================#
+# EKS Managed Node Group
+#=============================================================================#
+
+  EKSManagedNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      AmiType: !Ref EKSAmiType
+      CapacityType: !Ref EKSCapacityType
+      ClusterName: !Ref EKSControlPlane
+      DiskSize: !Ref EKSDiskSize
+      ForceUpdateEnabled: !Ref EKSForceUpdateEnabled
+      InstanceTypes: 
+        - !Ref EKSInstanceTypes
+      NodeRole: !Ref EKSNodeRole
+      NodegroupName: !Sub "${RootStackName}-eks-nodegroup"
+      RemoteAccess:
+        Ec2SshKey: !Ref EKSEc2SshKey
+        SourceSecurityGroups:
+          - !Ref BastionHostSecurityGroup
+      ScalingConfig:
+        DesiredSize: !Ref EKSDesiredSize
+        MaxSize: !Ref EKSMaxSize
+        MinSize: !Ref EKSMinSize
+      Subnets:
+        - !Ref EKSPrivateSubnet1
+        - !Ref EKSPrivateSubnet2
+      UpdateConfig:
+        MaxUnavailable: !Ref EKSMaxUnavailable
+  

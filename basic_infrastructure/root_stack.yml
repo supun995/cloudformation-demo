@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  Cloud formation Root stack.
+
+Parameters:
+
+  RootStackName:
+    Type: String
+    Default: migration-router
+
+Resources:
+
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./vpc.yml  
+      Parameters:
+        RootStackName: !Ref RootStackName
+        VpcCIDR: 10.0.0.0/16
+        PublicSubnet1CIDR: 10.0.3.0/24
+        PublicSubnet2CIDR: 10.0.4.0/24
+        PrivateSubnet1CIDR: 10.0.1.0/24
+        PrivateSubnet2CIDR: 10.0.2.0/24
+        DBPrivateSubnet1CIDR: 10.0.5.0/28 
+        DBPrivateSubnet2CIDR: 10.0.5.16/28
+
+  AuroraRdsPostgresStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./aurora_postgres.yml  
+      Parameters:
+        RootStackName: !Ref RootStackName
+        DatabaseName: postgres
+        EnvType: dev
+        AuroraEngine: aurora-postgresql
+        EngineVersion: 14.6
+        WriterInstanceType: db.t3.medium
+        ReplicaInstanceType: db.t3.medium
+        BackupWindow: 01:00-02:00
+        BackupRetentionPeriod: 7
+        MaintenanceWindow: mon:07:05-mon:07:35
+        MinorVersionUpgrade: true
+        MajorVersionUpgrade: false
+        DeleteAutomatedBackups: true
+        EnablePerformanceInsights: false
+        PubliclyAccessible: false
+        DBPrivateSubnet1ID: !GetAtt vpcStack.Outputs.DBPrivateSubnet1
+        DBPrivateSubnet2ID: !GetAtt vpcStack.Outputs.DBPrivateSubnet2
+        DBClusterFamily: aurora-postgresql14
+        VPCID: !GetAtt vpcStack.Outputs.VPC
+        DeletionProtection: false
+        EngineMode: provisioned
+        NetworkType: IPV4
+        Port: 5432
+        StorageEncrypted: true
+
+  EC2BastionHost:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./ec2.yml  
+      Parameters:
+        RootStackName: !Ref RootStackName
+        LatestAMI: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+        InstanceType: t2.micro
+        KeyPair: bastionhost
+        SshPort: 22
+        SourceCidr: 0.0.0.0/0
+        EC2Subnet1: !GetAtt vpcStack.Outputs.DBPrivateSubnet1
+        EC2Subnet2: !GetAtt vpcStack.Outputs.DBPrivateSubnet2
+        EC2VPC: !GetAtt vpcStack.Outputs.VPC
+
+  EKSstack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./eks.yml  
+      Parameters:
+        RootStackName: !Ref RootStackName
+        EKSVPC: !GetAtt vpcStack.Outputs.VPC
+        EKSIpFamily: ipv4
+        EKSServiceIpv4Cidr: 192.168.0.0/24
+        EKSEndpointPrivateAccess: true
+        EKSEndpointPublicAccess: false
+        EKSVersion: 1.26
+        EKSAddonCoreDNSVersion: v1.9.3-eksbuild.2
+        EKSAddonVPCCNIVersion: v1.12.6-eksbuild.1
+        EKSAddonKubeProxyVersion: v1.25.6-eksbuild.2
+        EKSAmiType: BOTTLEROCKET_x86_64
+        EKSCapacityType: ON_DEMAND
+        EKSDiskSize: 20
+        EKSForceUpdateEnabled: false
+        EKSInstanceTypes: t3.micro
+        EKSNodeRole: arn:aws:iam::106754953546:role/eksNodeRole
+        EKSEc2SshKey: bastionhost
+        EKSDesiredSize: 1
+        EKSMaxSize: 2
+        EKSMinSize: 1
+        EKSMaxUnavailable: 1
+        EKSPrivateSubnet1: !GetAtt vpcStack.Outputs.PrivateSubnet1
+        EKSPrivateSubnet2: !GetAtt vpcStack.Outputs.PrivateSubnet2
+        EKSClusterRoleArn: arn:aws:iam::106754953546:role/eksClusterRole
+        BastionHostSecurityGroup: !GetAtt EC2BastionHost.Outputs.BastionHostSecurityGroup
+
+
+

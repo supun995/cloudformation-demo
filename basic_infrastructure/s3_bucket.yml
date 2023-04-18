@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "CloudFormation Template to create simple S3 Bucket"
+
+#=============================================================================#
+# Below Resourses will be created as part of this stack.
+#1. S3 Bucket
+#=============================================================================#
+  
+Parameters:
+
+#=============================================================================#
+# Parameters 
+#=============================================================================#
+
+  RootStackName:
+    Type: String
+
+  BucketName:
+    Type: String
+    Description: A name for the bucket
+    Default: supunk995
+
+  AccessControl:
+    Type: String
+    Description: A canned access control list (ACL) that grants predefined permissions to the bucket
+    Default: Private
+
+  ObjectLockEnabled:
+    Type: String
+    Description: Indicates whether this bucket has an Object Lock configuration enabled
+    Default: false
+
+  VersioningConfigurationStatus:
+    Type: String
+    Description: Enables multiple versions of all objects in this bucket
+    Default: Suspended
+
+  PublicAccessBlockConfiguration:
+    Type: String
+    Description: Configuration that defines how Amazon S3 handles public access.
+    Default: true
+
+  ExpirationInDays:
+    Type: String
+    Description: Configuration that defines how Amazon S3 data life cycle.
+    Default: 365
+ 
+Resources:
+
+#=============================================================================#
+# S3 Bucket
+#=============================================================================#
+
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: !Ref AccessControl
+      BucketName: !Sub ${RootStackName}-${BucketName}
+      LifecycleConfiguration:
+        Rules:
+          - Id: !Sub ${RootStackName}-${BucketName}-lcr
+            Status: Enabled
+            ExpirationInDays: !Ref ExpirationInDays
+            # Transitions:
+            #   - TransitionInDays: 1
+            #     StorageClass: GLACIER
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: !Ref PublicAccessBlockConfiguration
+        BlockPublicPolicy: !Ref PublicAccessBlockConfiguration
+        IgnorePublicAcls: !Ref PublicAccessBlockConfiguration
+        RestrictPublicBuckets: !Ref PublicAccessBlockConfiguration
+      ObjectLockEnabled: !Ref ObjectLockEnabled
+      Tags: 
+        -
+          Key: Description
+          Value: logs store 
+      VersioningConfiguration:
+        Status: !Ref VersioningConfigurationStatus
+  
+

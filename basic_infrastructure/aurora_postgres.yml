@@ -1,0 +1,385 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'CloudFormation Template to create Aurora Postgresql Cluster DB Instance'
+
+#=============================================================================#
+# Below Resourses will be created as part of this stack.
+#1. Custom DBClusterParameterGroup
+#2. Custom DBParameterGroup
+#3. DBSubnetGroup
+#4. SecretsManager Secret
+#5. SecurityGroup
+#6. SecurityGroupIngress Rule
+#7. Aurora DBCluster
+#8. Aurora DBInstance
+# If EnvType Selected as prod multiAZ will be enabled and readreplica will be created.
+#=============================================================================#
+
+Parameters:
+
+#=============================================================================#
+# Parameters 
+#=============================================================================#
+
+  RootStackName:
+    Type: String
+    Description: Name of the stack
+
+  DatabaseName:
+    Type: String
+    Description: Name of the Database
+    Default: postgres
+
+  EnvType:
+    Description: Environment type. For prod a writer and replica instance is created,multiAZ is enabled.; for dev only a writer instance.
+    Default: dev
+    Type: String
+    AllowedValues:
+      - prod
+      - dev
+
+  AuroraEngine:
+    Type: String
+    Description: Aurora MySQL
+    Default: 'aurora-postgresql' 
+
+  EngineVersion:
+    Description: Database engine version
+    Type: String
+    Default: '14.6'
+
+  WriterInstanceType:
+    Type: String
+    Description: Writer instance type
+    Default: 'db.t3.medium'
+  
+  ReplicaInstanceType:
+    Type: String
+    Description: Replica Instance type
+    Default: 'db.t3.medium'
+
+  BackupWindow:
+    Type: String
+    Description: The daily time interval (in UTC) during which automated backups will be created. Must be in format Must be in hh24:mi-hh24:mi format
+    Default: '01:00-02:00'
+  
+  BackupRetentionPeriod:
+    Type: Number
+    Description: Period of backups to retain, must be a value from 1 to 35. 
+    Default: 7
+  
+  MaintenanceWindow:
+    Type: String
+    Description: Weekly maintenance window. ddd:hh24:mi-ddd:hh24:mi format (24H UTC clock). Minimum 60 minutes
+    Default: 'mon:07:05-mon:07:35'
+
+  MinorVersionUpgrade:
+    Type: String
+    Description: Specify true or false if the minor version of the database can be updated automatically during the maintenance window
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  MajorVersionUpgrade:
+    Type: String
+    Description: Specify true or false if the minor version of the database can be updated automatically during the maintenance window
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+  DeleteAutomatedBackups:
+    Type: String
+    Description: A value that indicates whether to remove automated backups immediately after the DB instance is deleted
+    Default: true
+
+  EnablePerformanceInsights:
+    Type: String
+    Description: A value that indicates whether to enable Performance Insights for the DB instance
+    Default: false
+
+  PubliclyAccessible:
+    Type: String
+    Description: Enable public access. 
+    Default: false
+
+  DBPrivateSubnet1ID:
+    Type: String
+    Description: Subnet for the DBInstance subnet group
+
+  DBPrivateSubnet2ID:
+    Type: String
+    Description: Subnet for the DBInstance subnet group.
+
+  DBClusterFamily:
+    Type: String
+    Description: The DB parameter group family name.  
+
+  VPCID:
+    Type: String
+    Description: ID of the VPC DB Security Group resides in.
+
+  DeletionProtection:
+    Type: String
+    Description: Make this true to set deletion protection.The database can't be deleted when deletion protection is enabled
+
+  EngineMode:
+    Type: String
+    Description: The name of the database engine that you want to use for this DB instance.
+
+  NetworkType:
+    Type: String
+    Description: The network type of the DB instance.
+    Default: IPV4
+
+  Port:
+    Type: String
+    Description: The port number on which the database accepts connections.
+    Default: 5432
+
+  StorageEncrypted:
+    Type: String
+    Description: A value that indicates whether the DB instance is encrypted. By default, it isn't encrypted
+    Default: true
+
+
+  # DBUsername:
+  #   Type: String
+  #   Description: Name of the master user
+  #   Default: postgres
+
+#=============================================================================#
+# Conditions
+#=============================================================================#
+  
+Conditions:
+#   EnhancedMonitoringEnabled: !Not [!Equals [!Ref MonitoringInterval, 0]]
+#   PerformanceInsightEnabled: !Equals [!Ref EnablePerformanceInsights, 'true']
+  ProdEnv: !Equals [!Ref EnvType, 'prod']
+
+
+Resources:
+
+#=============================================================================#
+# Database Cluster Parameter Group
+#=============================================================================#
+
+  ClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      DBClusterParameterGroupName: !Sub custom-${RootStackName}-${DatabaseName}-cluster-parameter-group
+      Description: !Sub ${RootStackName}-cluster-parameter-group
+      Family: !Ref DBClusterFamily #aurora-postgresql14 # Required
+      Parameters:
+        shared_preload_libraries: pgaudit
+        pgaudit.log: "ddl,misc,role,function"
+        pgaudit.role: rds_pgaudit
+        log_min_duration_statement: 60000
+        log_statement: ddl
+        log_connections: 1
+        log_disconnections: 1
+
+      Tags: 
+        -
+          Key: Name
+          Value: !Sub custom-${RootStackName}-${DatabaseName}-cluster-parameter-group
+
+#=============================================================================#
+# Database Parameter Group
+#=============================================================================#
+
+  DBParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      DBParameterGroupName: !Sub custom-${RootStackName}-${DatabaseName}-parameter-group
+      Description:  !Sub ${RootStackName}-parameter-group
+      Family: !Ref DBClusterFamily #aurora-postgresql14
+      # Parameters: JSON
+      Tags: 
+        -
+          Key: Name
+          Value: !Sub custom-${RootStackName}-${DatabaseName}-parameter-group
+
+#=============================================================================#
+# Database Subnet Group
+#=============================================================================#
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub ${RootStackName}-subnetgroup
+      DBSubnetGroupName: !Sub ${RootStackName}-subnetgroup
+      SubnetIds: 
+        - !Ref DBPrivateSubnet1ID
+        - !Ref DBPrivateSubnet2ID
+      Tags: 
+        -
+          Key: Name
+          Value: !Sub ${RootStackName}-${DatabaseName}-subnetgroup
+
+#=============================================================================#
+# AWS Secret Manager Secret to hold Database Passward
+#=============================================================================#
+
+  AuroraMasterSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Description: !Sub ${RootStackName}-postgres-pw
+      GenerateSecretString:
+        GenerateStringKey: "password"
+        PasswordLength: 16
+        ExcludePunctuation: true
+        SecretStringTemplate: !Join ['', ['{"username": "', "postgres", '"}']]
+      Name: !Sub '/${RootStackName}/${DatabaseName}-MasterPassword-secret'
+      Tags: 
+        -
+          Key: Name
+          Value: !Sub '${RootStackName}-${DatabaseName}-MasterPassword-secret'
+
+##Can You below code snippet to store database user as a seretManager Secret.
+  # AuroraMasterUser:
+  #   Type: 'AWS::SecretsManager::Secret'
+  #   DeletionPolicy: Delete
+  #   UpdateReplacePolicy: Delete
+  #   Properties:
+  #     Name: !Sub '/${RootStackName}/${DatabaseName}-MasterUser'
+  #     Description: 'Aurora database master user'
+  #     SecretString: !Ref DBUsername
+
+#This is to Link the SecretManager secret to the Database. This will be usefull if needed to implement passward rotation.
+
+  SecretAuroraClusterAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref AuroraMasterSecret
+      TargetId: !Ref AuroraDBCluster
+      TargetType: AWS::RDS::DBCluster
+
+#=============================================================================#
+# Database Security Group 
+#=============================================================================#
+
+  SecurityGroupDatabase:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub '${RootStackName}-${DatabaseName}-aurora-database-sg'
+      GroupName: !Sub '${RootStackName}-${DatabaseName}-aurora-database-sg'
+      VpcId: !Ref VPCID  #!ImportValue ExportedVPC
+      Tags:
+        -
+          Key: Name
+          Value: !Sub '${RootStackName}-${DatabaseName}-aurora-database-sg'
+      # SecurityGroupIngress:
+      #   - IpProtocol: tcp
+      #     CidrIp: !Ref VPCIDCIDR
+      #     FromPort: !Ref DBPort
+      #     ToPort: !Ref DBPort
+
+
+#=============================================================================#
+# Database Security Group Ingress Rule
+#=============================================================================#
+
+  DBClusterSecurityGroupIngress:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: !GetAtt 'SecurityGroupDatabase.GroupId'
+      IpProtocol: -1
+      SourceSecurityGroupId: !GetAtt 'SecurityGroupDatabase.GroupId'
+      Description: 'Self Reference' 
+
+#=============================================================================#
+# Database Cluster
+#=============================================================================#
+
+  AuroraDBCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Delete #attribute specifies that the resource should be deleted when the stack is deleted
+    UpdateReplacePolicy: Delete #attribute specifies that the resource should be replaced when the stack is updated
+    Properties:
+      # AutoMinorVersionUpgrade: true
+      # AvailabilityZones: 
+      #   - !Select [ 0, !GetAZs ]
+      #   - !Select [ 1, !GetAZs ]
+      BackupRetentionPeriod: !Ref BackupRetentionPeriod
+      CopyTagsToSnapshot: true
+      DBClusterIdentifier: !Sub ${RootStackName}-postgresql
+      DBClusterParameterGroupName: !Ref ClusterParameterGroup
+      # DBInstanceParameterGroupName: !Ref DBParameterGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      # DBSubnetGroupName: !Sub ${RootStackName}-DBsubnetgroup
+      DatabaseName: !Ref DatabaseName
+      DeletionProtection: !Ref DeletionProtection
+      EnableCloudwatchLogsExports: 
+        - postgresql
+      EnableHttpEndpoint: false
+      EnableIAMDatabaseAuthentication: false
+      Engine: !Ref AuroraEngine
+      EngineMode: !Ref EngineMode #provisioned
+      EngineVersion: !Ref EngineVersion
+      # KmsKeyId: "String"
+      # ManageMasterUserPassword: false
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref AuroraMasterSecret, ':SecretString:password}}' ]]
+      MasterUsername: postgres #!Join ['', ['{{resolve:secretsmanager:', !Ref MasterUser, '}}' ]]
+      NetworkType: !Ref NetworkType #IPV4
+      Port: !Ref Port #5432
+      PreferredBackupWindow: !Ref BackupWindow
+      PreferredMaintenanceWindow: !Ref MaintenanceWindow
+      StorageEncrypted: !Ref StorageEncrypted #true
+      Tags:
+        -
+          Key: Name
+          Value: !Sub ${RootStackName}-${DatabaseName}-dbcluster
+      VpcSecurityGroupIds: 
+      - !GetAtt 'SecurityGroupDatabase.GroupId'
+
+#=============================================================================#
+# Database Instance
+#=============================================================================#
+
+  AuroraDBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      AllowMajorVersionUpgrade: !Ref MajorVersionUpgrade
+      AutoMinorVersionUpgrade: !Ref MinorVersionUpgrade
+      # AvailabilityZone: !Select [ 0, !GetAZs ]
+      DBClusterIdentifier: !Ref AuroraDBCluster
+      DBInstanceClass: !Ref WriterInstanceType
+      DBInstanceIdentifier: !Sub ${RootStackName}-postgres-instance
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      DBParameterGroupName: !Ref DBParameterGroup
+      DeleteAutomatedBackups: !Ref DeleteAutomatedBackups
+      EnablePerformanceInsights: !Ref EnablePerformanceInsights
+      Engine: !Ref AuroraEngine
+      EngineVersion: !Ref EngineVersion
+      MultiAZ: !If [ProdEnv, true, false]
+      # OptionGroupName: !Ref DBOptionGroup
+      PubliclyAccessible: !Ref PubliclyAccessible
+      Tags: 
+        -
+          Key: Name
+          Value: !Sub ${RootStackName}-${DatabaseName}-instance
+
+
+#Database replica instance configuration details are shown below.
+
+
+  AuroraReplicaInstance:
+    Type: 'AWS::RDS::DBInstance'
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Condition: ProdEnv
+    Properties:
+      Engine: !Ref AuroraEngine
+      DBClusterIdentifier: !Ref AuroraDBCluster
+      DBInstanceClass: !Ref ReplicaInstanceType
+      AllowMajorVersionUpgrade: !Ref MajorVersionUpgrade
+      AutoMinorVersionUpgrade: !Ref MinorVersionUpgrade
+      # DBParameterGroupName: !Ref ReplicaDBParameterGroup
+      EnablePerformanceInsights: !Ref EnablePerformanceInsights
+      PubliclyAccessible: !Ref PubliclyAccessible
+      Tags: 
+        -
+          Key: Name
+          Value: !Sub ${RootStackName}-${DatabaseName}-replica-instance
+  

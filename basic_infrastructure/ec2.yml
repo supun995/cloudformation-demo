@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'CloudFormation Template to create ec2 HA bastion instance'
+
+#=============================================================================#
+# Below Resourses will be created as part of this stack.
+#1. EC2 LaunchConfiguration
+#2. EC2 AutoScalingGroup in 2 AZ
+#3. SecurityGroup
+#4. SecurityGroupIngress
+#=============================================================================#
+
+Parameters:
+
+#=============================================================================#
+# Parameters 
+#=============================================================================#
+
+  RootStackName:
+    Type: String
+
+  LatestAMI:
+    Description: Static reference to latest Amazon Linux 2 AMI
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+    AllowedValues:
+      - '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+  InstanceType:
+    Description: Instance size for the Bastion Host (default - t3.micro)
+    Type: String 
+    AllowedValues:
+      - t2.micro
+    Default: t2.micro
+
+  KeyPair:
+    Description: Which Key Pair would you like to use for remote access?
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Default: bastionhost
+
+  SshPort:
+    Description: What port number would you like to use to connect to your Bastion Host over SSH?
+    Type: Number
+    Default: 22
+    MinValue: 22
+    MaxValue: 65535
+
+  SourceCidr:
+    Description: What is the CIDR Block of IPv4 IP addresses allowed to access your Bastion Host via SSH?
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: "^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?).){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(/([0-9]|[1-2][0-9]|3[0-2]))?$"
+    ConstraintDescription: The value must be valid IPv4 CIDR block.
+
+  EC2Subnet1:
+    Type: String
+    Description: Subnet for the ec2 autoscaling group.
+
+  EC2Subnet2:
+    Type: String
+    Description: Subnet for the ec2 autoscaling group.
+
+  EC2VPC:
+    Type: String
+    Description: VPC for the ec2 security group.
+
+Resources:
+
+#=============================================================================#
+# EC2 Launch Configuration
+#=============================================================================#
+
+  BastionHostLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: true
+      ImageId: !Ref LatestAMI
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPair
+      LaunchConfigurationName: !Sub ${RootStackName}-BastionHostLaunchConfiguration
+      SecurityGroups: 
+        - !Ref BastionHostSecurityGroup
+      # UserData: "String"
+
+#=============================================================================#
+# EC2 AutoScaling Group
+#=============================================================================#
+
+  BastionHostASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Join ["", [!Ref "RootStackName", "BastionHostASG"]]
+      DesiredCapacity: "1"
+      # HealthCheckGracePeriod: 60
+      # HealthCheckType: EC2
+      LaunchConfigurationName: !Ref BastionHostLaunchConfig
+      MaxSize: "1"
+      MinSize: "1"
+      VPCZoneIdentifier: 
+        - !Ref EC2Subnet1
+        - !Ref EC2Subnet2
+      Tags: 
+        -
+          Key: Name
+          Value: !Sub ${RootStackName}-BastionHost
+          PropagateAtLaunch: true
+
+#=============================================================================#
+# EC2 Security Group
+#=============================================================================#
+
+  BastionHostSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bastion Host Security Group
+      VpcId: !Ref EC2VPC
+      GroupName: !Join ["", [ !Ref "RootStackName", "BastionHostSecurityGroup"]]
+      Tags: 
+        -
+          Key: Name
+          Value: !Sub ${RootStackName}-BastionHost-sg
+
+#=============================================================================#
+# EC2 SecurityGroup Ingress Rule
+#=============================================================================#
+
+  BastionHostSecurityGroupSshIngressRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt BastionHostSecurityGroup.GroupId
+      IpProtocol: "tcp"
+      FromPort: !Ref SshPort
+      ToPort: !Ref SshPort
+      CidrIp: !Ref SourceCidr
+
+#=============================================================================#
+# OUTPUTS
+#=============================================================================#
+
+Outputs:
+  BastionHostSecurityGroup:
+    Description: Security Group of bastionHost
+    Value: !Ref BastionHostSecurityGroup
